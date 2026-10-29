@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chisa · taller de hilos</title>
+    <meta
+      name="description"
+      content="Chisa corta el hilo que ata tu MP4 a la recompresión: sella el contenedor sin recodificar, en tu navegador y sin subir nada."
+    />
+    <meta name="theme-color" content="#0a0a0c" />
+    <meta property="og:title" content="Chisa · taller de hilos" />
+    <meta
+      property="og:description"
+      content="Corta el hilo que tira de tu resolución. Sellador de contenedor MP4, local y sin backend."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://blues-os.github.io/BlueChisa/docs/preview.png" />
+    <link rel="icon" href="./assets/favicon-chisa.svg" type="image/svg+xml" />
+    <link rel="icon" href="./assets/favicon-chisa-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="./assets/apple-touch-icon-chisa.png" />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./">
+        <span class="brand-mark" aria-hidden="true">千</span>
+        <span class="brand-text">
+          <strong>Chisa</strong>
+          <em>taller de hilos</em>
+        </span>
+      </a>
+      <nav class="topbar-side" aria-label="Otras versiones">
+        <a class="switch" href="https://blues-os.github.io/ZhezhiUploader/">折 Zhezhi</a>
+        <a class="switch" href="https://blues-os.github.io/ZhezhiUploader/phrolova/">洛 Phrolova</a>
+        <span class="badge">local · sin servidor</span>
+      </nav>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">tijera · hilo · sello</p>
+          <h1>Corta el hilo<br />que tira de tu<br /><em>resolución.</em></h1>
+          <p class="lede">
+            Chisa no recodifica: corta el hilo que ata tu MP4 a la recompresión.
+            Reescribe el contenedor con la misma estructura que el archivo que la
+            plataforma respeta, sin que el vídeo salga de tu equipo.
+          </p>
+
+          <figure class="quote">
+            <blockquote>
+              «Todo lo que se sostiene está atado por un hilo. Yo sé cuál cortar.»
+            </blockquote>
+            <figcaption>— el taller de hilos</figcaption>
+          </figure>
+
+          <ul class="facts">
+            <li><strong>Sin recomprimir</strong> si ya es H.264/HEVC</li>
+            <li><strong>Mismo descuadre</strong> que el archivo de referencia</li>
+            <li><strong>Nada sale</strong> de tu equipo</li>
+          </ul>
+        </div>
+
+        <aside class="pattern" aria-hidden="true">
+          <div class="pattern-sheet">
+            <div class="pattern-head">
+              <span>patrón nº 013</span>
+              <span>sello de contenedor</span>
+            </div>
+
+            <svg class="pattern-thread" viewBox="0 0 300 96" fill="none">
+              <path
+                d="M4 74C48 74 58 18 104 18s64 58 110 58 54-50 82-42"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-dasharray="5 5"
+              />
+              <circle cx="4" cy="74" r="3" fill="currentColor" />
+              <circle cx="296" cy="34" r="3" fill="currentColor" />
+            </svg>
+
+            <dl class="pattern-list">
+              <div><dt>tela</dt><dd>MP4 · H.264 / HEVC</dd></div>
+              <div><dt>corte</dt><dd>sin recodificar</dd></div>
+              <div><dt>hilo</dt><dd>BlueChisa</dd></div>
+            </dl>
+
+            <p class="pattern-note">cortar por la línea de puntos</p>
+            <span class="pattern-seal">千</span>
+
+            <svg class="pattern-scissors" viewBox="0 0 64 64" aria-hidden="true">
+              <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                <path d="M20 12 40 40" />
+                <path d="M44 12 24 40" />
+                <circle cx="17" cy="48" r="6.5" />
+                <circle cx="47" cy="48" r="6.5" />
+              </g>
+              <circle cx="32" cy="40" r="2.6" fill="currentColor" stroke="none" />
+            </svg>
+          </div>
+        </aside>
+      </section>
+
+      <section class="card work" id="taller">
+        <div class="steps" aria-hidden="true">
+          <span class="step"><b>01</b> Medir</span>
+          <span class="step"><b>02</b> Trazar</span>
+          <span class="step is-active"><b>03</b> Cortar</span>
+        </div>
+
+        <div id="drop" class="drop" tabindex="0" role="button" aria-label="Elegir vídeo">
+          <input id="file" type="file" accept="video/*,.mp4,.mov,.mkv,.webm,.m4v" hidden />
+
+          <svg class="shears" viewBox="0 0 64 64" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+              <path d="M20 12 40 40" />
+              <path d="M44 12 24 40" />
+              <circle cx="17" cy="48" r="6.5" />
+              <circle cx="47" cy="48" r="6.5" />
+            </g>
+            <circle cx="32" cy="40" r="2.6" fill="currentColor" stroke="none" />
+          </svg>
+
+          <p class="drop-title">Deja el vídeo sobre la mesa de corte</p>
+          <p class="drop-sub">o haz clic para elegirlo · MP4, MOV, MKV, WebM…</p>
+        </div>
+
+        <div id="fileInfo" class="file-info" hidden>
+          <dl>
+            <div><dt>Archivo</dt><dd id="fName">—</dd></div>
+            <div><dt>Tamaño</dt><dd id="fSize">—</dd></div>
+            <div><dt>Duración</dt><dd id="fDur">—</dd></div>
+            <div><dt>Contenedor</dt><dd id="fKind">—</dd></div>
+          </dl>
+          <button id="clear" class="ghost-btn" type="button">Retirar</button>
+        </div>
+
+        <div class="options">
+          <label class="field">
+            <span>Modo</span>
+            <select id="mode">
+              <option value="compat" selected>Corte de hilos — efecto original</option>
+              <option value="safe">Dobladillo limpio — contenedor válido</option>
+            </select>
+          </label>
+
+          <label class="field" id="ghostField" hidden>
+            <span>Muestras fantasma</span>
+            <input id="ghost" type="number" min="0" max="50000" step="1" value="9112" />
+          </label>
+
+          <label class="check">
+            <input id="tag" type="checkbox" checked />
+            <span>Firmar la salida con el nombre del taller</span>
+          </label>
+        </div>
+
+        <p id="modeNote" class="note" hidden>
+          El dobladillo deja las tablas intactas: el archivo es válido y la plataforma
+          lo recomprime con normalidad. Bajará la resolución.
+        </p>
+        <p id="compatNote" class="note warn" hidden>
+          Aplica el mismo descuadre de tablas que el archivo de referencia, verificado
+          contra él. Deja las tablas de muestras inconsistentes a propósito: es lo que
+          impide que la plataforma rebaje la resolución. En el navegador se reproduce
+          igual. Riesgo: puede quedarse en «procesando».
+        </p>
+        <p class="note faint" id="tagNote" hidden>
+          La firma que quedará en el MP4 es <code>BlueChisa-v2.0.3</code>. Es lo que
+          verás en MediaInfo como aplicación de escritura.
+        </p>
+
+        <button id="run" class="primary" type="button" disabled>
+          Cortar el hilo
+        </button>
+
+        <div id="error" class="error" hidden></div>
+      </section>
+
+      <section id="progress" class="card progress" hidden aria-live="polite">
+        <div class="progress-head">
+          <span id="stage">Midiendo el archivo</span>
+          <span id="pct">0%</span>
+        </div>
+        <div class="bar"><div id="barFill" class="bar-fill"></div></div>
+        <ol id="stages" class="stage-list"></ol>
+      </section>
+
+      <section id="result" class="card result" hidden aria-live="polite">
+        <div class="result-head">
+          <div class="result-copy">
+            <p class="eyebrow">corte terminado</p>
+            <h2 id="rTitle">Patrón sellado</h2>
+            <p id="rMeta" class="muted"></p>
+          </div>
+          <div class="result-side">
+            <span class="seal" aria-hidden="true">千</span>
+            <a id="download" class="primary" download>Descargar MP4</a>
+          </div>
+        </div>
+
+        <dl class="report" id="report"></dl>
+
+        <details class="details">
+          <summary>Qué se ha cortado</summary>
+          <ul id="changes"></ul>
+        </details>
+      </section>
+
+      <section class="card caveat">
+        <h2>Antes de cortar</h2>
+        <p>
+          El corte no «mejora» el vídeo: deja el contenedor MP4
+          <strong>inconsistente a propósito</strong> para que el transcoder de la
+          plataforma no pueda rebajarlo. Es la misma estructura del archivo de
+          referencia, comprobada contra él.
+        </p>
+        <p class="note warn" style="margin-top: 14px">
+          Si necesitas publicar con seguridad, usa <strong>Dobladillo limpio</strong>:
+          ahí sí recomprime, pero el archivo es válido.
+        </p>
+      </section>
+
+      <section class="chisa">
+        <div class="chisa-head">
+          <p class="eyebrow">la costurera</p>
+          <h2>Kuchiba Chisa</h2>
+          <p class="chisa-lede">
+            Estudiante de la Academia Startorch, uniforme marinero negro y lazo rojo
+            en la sien. Analiza la estructura de lo que mira y corta los hilos que
+            sostienen las cosas. De ahí viene el nombre de este taller.
+          </p>
+        </div>
+
+        <div class="chisa-grid">
+          <article class="chisa-card">
+            <span class="chisa-index">01</span>
+            <h3>Uniforme</h3>
+            <p>
+              Negro, con cuello blanco y pañuelo rojo. Un uniforme viejo que sigue
+              impecable: cuello firme, pliegues rectos.
+            </p>
+          </article>
+          <article class="chisa-card">
+            <span class="chisa-index">02</span>
+            <h3>Hilo rojo</h3>
+            <p>
+              El lazo de la sien derecha. Dicen que es el deseo de seguir conectada a
+              los demás, y de protegerlos.
+            </p>
+          </article>
+          <article class="chisa-card">
+            <span class="chisa-index">03</span>
+            <h3>Tijeras de sastre</h3>
+            <p>
+              Su arma: unas tijeras enormes con regla, capaces de convertirse en
+              sierra. Cortan estructuras, no solo telas.
+            </p>
+          </article>
+        </div>
+
+        <p class="chisa-note">
+          Homenaje no oficial. Chisa y <em>Wuthering Waves</em> pertenecen a Kuro Games.
+          Esta página no está afiliada al juego ni a TikTok.
+        </p>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p class="footer-mark"><span>千</span> Chisa · taller de hilos</p>
+      <p class="muted">
+        Herramienta local, sin backend · <a href="https://github.com/BlueS-OS/BlueChisa">código en GitHub</a>
+      </p>
+      <p class="muted footer-links">
+        Otras pieles del taller:
+        <a href="https://blues-os.github.io/ZhezhiUploader/">Zhezhi</a> ·
+        <a href="https://blues-os.github.io/ZhezhiUploader/phrolova/">Phrolova</a>
+      </p>
+    </footer>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

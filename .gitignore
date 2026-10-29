@@ -1,0 +1,20 @@
+# Vídeos de trabajo: nunca van al repositorio.
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.m4v
+*.avi
+
+# Archivos temporales del navegador / sistema
+Thumbs.db
+desktop.ini
+.DS_Store
+*.log
+*.tmp
+*.part
+
+# Editores
+.vscode/
+.idea/
+*.swp
