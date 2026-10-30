@@ -284,8 +284,11 @@ Luego pasa `salida.mp4` por el sellador web para aplicar faststart/color/firma.
 - **Zhezhi** · papel de jade y tinta: <https://blues-os.github.io/ZhezhiUploader/>
 - **Phrolova** · carmesí y lirio de araña:
   <https://blues-os.github.io/ZhezhiUploader/phrolova/>
+- **Hilo de subida** · la extensión de navegador que corta el JSON antes de
+  publicar: <https://blues-os.github.io/ChisaUploader/>
 
-Las tres comparten motor; cada una firma sus MP4 con su propio nombre.
+Las tres pieles comparten motor; cada una firma sus MP4 con su propio nombre. La
+extensión es otra cosa: va justo antes de la subida, en el navegador.
 
 ---
 
