@@ -2,13 +2,19 @@
  * mp4.js — Parser y sellador de contenedores MP4 (BlueChisa).
  *
  * No recodifica nada: reescribe la estructura de átomos (boxes) del archivo.
- * Dos modos:
- *   - safe:   faststart, timestamps a cero, idioma, color bt709, limpieza de
- *             metadatos de procedencia (C2PA/uuid) y firma del taller.
- *   - compat: además aplica el descuadre deliberado de tablas (handlers
- *             renombrados, edit list vacía, muestras fantasma) que impide que
- *             la plataforma rebaje la resolución. Puede producir archivos que
- *             algunos decodificadores estrictos rechacen.
+ * Tres modos:
+ *   - safe:     faststart, timestamps a cero, idioma, color bt709, limpieza de
+ *               metadatos de procedencia (C2PA/uuid) y firma del taller.
+ *   - compat:   además aplica el descuadre deliberado de tablas (handlers
+ *               renombrados, edit list vacía, muestras fantasma) que impide que
+ *               la plataforma rebaje la resolución. Puede producir archivos que
+ *               algunos decodificadores estrictos rechacen.
+ *   - surgical: mismo objetivo que compat pero SIN descuadrar tablas. Añade
+ *               una cola real de 18 frames AAC de silencio (0,384 s), una
+ *               segunda descripción de muestra y un clon de la pista de audio;
+ *               más un `pasp` 1:1. Las tablas quedan coherentes (stts == stsz)
+ *               y el archivo declara una firma de encoder ajena (Lavf por
+ *               defecto). Técnica medida en Shore Uploader (2026-11).
  */
 
 export class Mp4Error extends Error {
@@ -27,6 +33,64 @@ const HEVC_CODECS = new Set(["hvc1", "hev1", "dvh1", "dvhe"]);
 
 const GHOST_SAMPLE = new Uint8Array([0, 0, 0, 4, 0, 0, 0, 0]); // 8 bytes por muestra fantasma
 
+/* ------------------------------------------------------------------ */
+/* modo quirúrgico: binarios de referencia                             */
+/* ------------------------------------------------------------------ */
+/* Extraídos del patcher de Shore Uploader (build R3EQ9Y1ZLEWB2b2erWQ94,
+ * 2026-11). Son una cola de audio AAC-48k válida, con un segundo descriptor
+ * de códec etiquetado `Lavc62.11.100`, y las dos tablas `stsd` que la
+ * acompañan. No se generan en tiempo de ejecución: son bytes fijos. */
+
+const hexBytes = (hex) => Uint8Array.from(hex.match(/../g).map((byte) => parseInt(byte, 16)));
+
+// Cola de 125 B = 18 frames AAC de silencio (23 B + 17 × 6 B ≈ 0,384 s a 48 kHz).
+const AUDIO_TAIL_SIZES = [23, ...Array.from({ length: 17 }, () => 6)];
+const AUDIO_TAIL_BYTES = (() => {
+  const descriptor = hexBytes("de02004c61766336322e31312e31303000422008c11838"); // 23 B
+  const frame = hexBytes("211004608c1c"); // 6 B
+  const out = new Uint8Array(125);
+  out.set(descriptor, 0);
+  for (let i = 0; i < 17; i += 1) out.set(frame, 23 + 6 * i);
+  return out;
+})();
+
+// stsd del audio con DOS entradas: la real y la del descriptor `Lavc62.11.100`.
+const STSD_TWO_ENTRIES = hexBytes(
+  "000000ec7374736400000000000000020000006b6d7034610000000000000001" +
+    "00000000000000000002001000000000bb8000000000003365736473000000" +
+    "000380808022000200048080801440150000000001f3f60001ea8d05808080" +
+    "0211900680808001020000001462747274000000000001f3f60001ea8d0000" +
+    "00716d703461000000000000000100000000000000000002001000000000bb" +
+    "8000000000003965736473000000000380808028000200048080801a401500" +
+    "00000001f3f60001ea8d0580808008118004c0400020000680808001020000" +
+    "001462747274000000000001f3f60001ea8d",
+).subarray(8);
+
+// stsd del audio con UNA entrada: la que usa la pista clonada.
+const STSD_ONE_ENTRY = hexBytes(
+  "0000007b7374736400000000000000010000006b6d7034610000000000000001" +
+    "00000000000000000002001000000000bb8000000000003365736473000000" +
+    "000380808022000200048080801440150000000001f3f60001ea8d05808080" +
+    "0211900680808001020000001462747274000000000001f3f60001ea8d",
+).subarray(8);
+
+// `pasp` 1:1 (píxeles cuadrados): evita reescalados por aspecto raro.
+const PASP_BOX = hexBytes("00000010706173700000000100000001");
+
+const AAC_FRAME_SAMPLES = 1024; // muestras por frame AAC
+const AUDIO_TAIL_SECONDS = (AUDIO_TAIL_SIZES.length * AAC_FRAME_SAMPLES) / 48000;
+
+/** Binarios fijos del modo quirúrgico. Exportados para poder verificarlos
+ *  contra el patcher de referencia en los tests. */
+export const SURGICAL_BINARY = {
+  audioTail: AUDIO_TAIL_BYTES,
+  audioTailSizes: AUDIO_TAIL_SIZES,
+  stsdTwoEntries: STSD_TWO_ENTRIES,
+  stsdOneEntry: STSD_ONE_ENTRY,
+  pasp: PASP_BOX,
+};
+
+
 const DEFAULTS = {
   mode: "safe",
   ghostSamples: 9112,
@@ -43,6 +107,14 @@ const DEFAULTS = {
 const COMPAT_TAGS = {
   tagName: "BlueChisa-v2.0.3",
   tagComment: "BlueChisa",
+};
+
+/* En quirúrgico la firma imita a un mux de FFmpeg real: el archivo debe
+ * parecer recién salido de `ffmpeg`, no de un taller. Se puede sobrescribir
+ * con `tagName` / `tagComment` desde la API. */
+const SURGICAL_TAGS = {
+  tagName: "Lavf62.3.100",
+  tagComment: "Lavf62.3.100",
 };
 
 /* ------------------------------------------------------------------ */
@@ -322,6 +394,289 @@ function writeSampleSizes(box, sizes) {
 }
 
 /* ------------------------------------------------------------------ */
+/* modo quirúrgico: escritores y sondas                                */
+/* ------------------------------------------------------------------ */
+
+function writeStsc(box, entries) {
+  const payload = new Uint8Array(8 + entries.length * 12);
+  payload.set(box.payload.subarray(0, 4));
+  setU32(payload, 4, entries.length);
+  entries.forEach(([firstChunk, perChunk, description], i) => {
+    setU32(payload, 8 + i * 12, firstChunk);
+    setU32(payload, 12 + i * 12, perChunk);
+    setU32(payload, 16 + i * 12, description);
+  });
+  box.payload = payload;
+}
+
+function appendSttsEntry(box, count, delta) {
+  writeStts(box, [...readStts(box), [count, delta]]);
+}
+
+function sttsTotal(box) {
+  return readStts(box).reduce((sum, [count, delta]) => sum + count * delta, 0);
+}
+
+function setMediaDuration(box, duration) {
+  if (!box) return false;
+  const copy = box.payload.slice();
+  if (copy[0] === 1) {
+    if (copy.byteLength < 32) return false;
+    viewOf(copy).setBigUint64(24, BigInt(duration), false);
+  } else {
+    if (copy.byteLength < 20) return false;
+    setU32(copy, 16, Math.min(duration, 0xffffffff));
+  }
+  box.payload = copy;
+  return true;
+}
+
+function setTrackDuration(box, duration) {
+  if (!box) return false;
+  const copy = box.payload.slice();
+  if (copy[0] === 1) {
+    if (copy.byteLength < 36) return false;
+    viewOf(copy).setBigUint64(28, BigInt(duration), false);
+  } else {
+    if (copy.byteLength < 24) return false;
+    setU32(copy, 20, Math.min(duration, 0xffffffff));
+  }
+  box.payload = copy;
+  return true;
+}
+
+function setMovieDuration(box, duration) {
+  return setMediaDuration(box, duration);
+}
+
+function movieDurationOf(box) {
+  if (!box) return { unknown: true, value: 0 };
+  if (box.payload[0] === 1) {
+    const value = viewOf(box.payload).getBigUint64(24, false);
+    return { unknown: value === 0xffffffffffffffffn, value: Number(value) };
+  }
+  const value = u32(box.payload, 16);
+  return { unknown: value === 0xffffffff, value };
+}
+
+function setTrackId(tkhd, id) {
+  if (!tkhd) return false;
+  const copy = tkhd.payload.slice();
+  setU32(copy, copy[0] === 1 ? 20 : 12, id);
+  tkhd.payload = copy;
+  return true;
+}
+
+function nextTrackIdOf(moov) {
+  const mvhd = findChild(moov, "mvhd");
+  if (!mvhd || mvhd.payload.byteLength < 4) return 2;
+  return u32(mvhd.payload, mvhd.payload.byteLength - 4);
+}
+
+function bumpEditDuration(box, extra) {
+  let parsed;
+  try {
+    parsed = readEditList(box);
+  } catch {
+    return false; // elst truncada: mejor dejarla como está que romper el parcheo
+  }
+  const { version, entries } = parsed;
+  if (!entries.length) return false;
+  const first = entries[0].slice();
+  if (version === 1) {
+    viewOf(first).setBigUint64(0, viewOf(first).getBigUint64(0, false) + BigInt(extra), false);
+  } else {
+    setU32(first, 0, Math.min(u32(first, 0) + extra, 0xffffffff));
+  }
+  writeEditList(box, version, [first, ...entries.slice(1)]);
+  return true;
+}
+
+function cloneBox(box) {
+  return {
+    type: box.type,
+    start: -1,
+    size: box.size,
+    headerSize: box.headerSize,
+    payloadStart: -1,
+    payloadEnd: -1,
+    payload: box.payload.slice(),
+    children: box.children ? box.children.map(cloneBox) : null,
+  };
+}
+
+/** `pasp` 1:1 en la primera entrada del stsd de vídeo, si no lo tiene ya.
+ *  Igual que el patcher de referencia: se inserta justo ANTES de `btrt`
+ *  (la huella habitual de un mux de FFmpeg), no al final de la entrada. */
+function addPasp(trak) {
+  const stsd = pathBox(trak, "mdia", "minf", "stbl", "stsd");
+  if (!stsd || stsd.payload.byteLength < 16) return false;
+  const payload = stsd.payload;
+  const entrySize = u32(payload, 8);
+  const entryEnd = 8 + entrySize;
+  if (entrySize < 16 || entryEnd > payload.byteLength) return false;
+  const entry = payload.subarray(8, entryEnd);
+  if (indexOfBytes(entry, asciiBytes("pasp")) !== -1) return false;
+
+  // Si la entrada trae `btrt`, el pasp va delante de él (offset absoluto).
+  const btrtAt = indexOfBytes(payload, asciiBytes("btrt"), 12);
+  const insertAt = btrtAt !== -1 && btrtAt - 4 >= 8 && btrtAt - 4 < entryEnd ? btrtAt - 4 : entryEnd;
+
+  const next = concat([payload.subarray(0, insertAt), PASP_BOX, payload.subarray(insertAt)]);
+  setU32(next, 8, entrySize + PASP_BOX.byteLength);
+  stsd.payload = next;
+  return true;
+}
+
+/** ¿El audio es AAC-LC estéreo a 48 kHz con esds? Solo entonces la cola
+ *  precalculada encaja sin recodificar. */
+function audioProfile(trak) {
+  const stsd = pathBox(trak, "mdia", "minf", "stbl", "stsd");
+  if (!stsd || stsd.payload.byteLength < 16) return { ok: false, reason: "sin stsd" };
+  const payload = stsd.payload;
+  const entrySize = u32(payload, 8);
+  if (entrySize < 36 || 8 + entrySize > payload.byteLength) {
+    return { ok: false, reason: "entrada de audio atípica" };
+  }
+  const entry = payload.subarray(8, 8 + entrySize);
+  const codec = ascii(entry, 4, 4);
+  if (codec !== "mp4a") return { ok: false, reason: `códec ${codec || "?"}` };
+  if (indexOfBytes(entry, asciiBytes("esds")) === -1) return { ok: false, reason: "mp4a sin esds" };
+  const channels = viewOf(entry).getUint16(24, false);
+  if (channels !== 2) return { ok: false, reason: `${channels} canal(es)` };
+  const sampleRate = Math.round(u32(entry, 32) / 65536);
+  if (sampleRate !== 48000) return { ok: false, reason: `${sampleRate} Hz` };
+  const mdhd = pathBox(trak, "mdia", "mdhd");
+  const timescale = mdhd ? u32(mdhd.payload, mdhd.payload[0] === 1 ? 20 : 12) : 0;
+  if (timescale !== 48000) return { ok: false, reason: `timescale ${timescale}` };
+  return { ok: true };
+}
+
+/** Convierte offsets por chunk en offsets por muestra (lo que exige stsc=1). */
+function expandChunkOffsets(stscPayload, chunkOffsets, sampleSizes) {
+  if (!stscPayload || stscPayload.byteLength < 16) return null;
+  if (chunkOffsets.length === sampleSizes.length) return chunkOffsets.slice();
+  const count = u32(stscPayload, 4);
+  const entries = [];
+  for (let i = 0; i < count; i += 1) {
+    const at = 8 + i * 12;
+    if (at + 12 > stscPayload.byteLength) break;
+    entries.push([u32(stscPayload, at), u32(stscPayload, at + 4)]);
+  }
+  if (!entries.length) return null;
+
+  const out = [];
+  let sample = 0;
+  entries.forEach(([firstChunk, perChunk], index) => {
+    const lastChunk = index + 1 < entries.length ? entries[index + 1][0] - 1 : chunkOffsets.length;
+    for (let chunk = firstChunk; chunk <= lastChunk && chunk <= chunkOffsets.length; chunk += 1) {
+      let at = chunkOffsets[chunk - 1];
+      for (let s = 0; s < perChunk && sample < sampleSizes.length; s += 1) {
+        out.push(at);
+        at += sampleSizes[sample];
+        sample += 1;
+      }
+    }
+  });
+  return out.length === sampleSizes.length ? out : null;
+}
+
+/**
+ * Añade 18 frames AAC de silencio al final de la pista de audio, con una
+ * segunda descripción de muestra, y clona la pista. Devuelve las cajas de
+ * offsets que hay que reescribir y los offsets por muestra sin desplazar.
+ */
+function applyAudioTail(moov, audio, movieTimescale) {
+  const report = {
+    applied: false,
+    frames: 0,
+    bytes: 0,
+    seconds: 0,
+    clonedTrack: false,
+    secondDescription: false,
+    reason: "",
+  };
+  const profile = audioProfile(audio);
+  if (!profile.ok) {
+    report.reason = `audio no compatible (${profile.reason})`;
+    return { report, targets: [], perSample: [] };
+  }
+
+  const stbl = pathBox(audio, "mdia", "minf", "stbl");
+  const stsz = stbl && findChild(stbl, "stsz");
+  const stsc = stbl && findChild(stbl, "stsc");
+  const stts = stbl && findChild(stbl, "stts");
+  const stsd = stbl && findChild(stbl, "stsd");
+  const stco = stbl && (findChild(stbl, "stco") || findChild(stbl, "co64"));
+  if (!stsz || !stsc || !stts || !stsd || !stco) {
+    report.reason = "tablas de audio incompletas";
+    return { report, targets: [], perSample: [] };
+  }
+
+  const { sizes } = readSampleSizes(stsz);
+  const perSample = expandChunkOffsets(stsc.payload, readOffsets(stco), sizes);
+  if (!perSample) {
+    report.reason = "no se pudo expandir stsc/stco";
+    return { report, targets: [], perSample: [] };
+  }
+
+  const tailSizes = AUDIO_TAIL_SIZES.slice();
+  const total = sizes.length + tailSizes.length;
+
+  // 1. muestras y tiempos: stsz y stts quedan coherentes entre sí.
+  writeSampleSizes(stsz, [...sizes, ...tailSizes]);
+  appendSttsEntry(stts, tailSizes.length, AAC_FRAME_SAMPLES);
+
+  // 2. un chunk por muestra y segunda descripción para el tramo final.
+  writeStsc(stsc, [
+    [1, 1, 1],
+    [Math.max(1, total - 7), 1, 2],
+  ]);
+  stsd.payload = STSD_TWO_ENTRIES.slice();
+  report.secondDescription = true;
+
+  // 3. duraciones de la pista original.
+  const mediaDuration = sttsTotal(stts);
+  setMediaDuration(pathBox(audio, "mdia", "mdhd"), mediaDuration);
+  const trackDuration = Math.round((mediaDuration * movieTimescale) / 48000);
+  setTrackDuration(findChild(audio, "tkhd"), trackDuration);
+  const elst = pathBox(audio, "edts", "elst");
+  if (elst) {
+    bumpEditDuration(elst, Math.round((tailSizes.length * AAC_FRAME_SAMPLES * movieTimescale) / 48000));
+  }
+
+  // 4. clon de la pista, con una sola descripción.
+  const clone = cloneBox(audio);
+  const cloneStsd = pathBox(clone, "mdia", "minf", "stbl", "stsd");
+  if (cloneStsd) cloneStsd.payload = STSD_ONE_ENTRY.slice();
+  const cloneStsc = pathBox(clone, "mdia", "minf", "stbl", "stsc");
+  if (cloneStsc) writeStsc(cloneStsc, [[1, 1, 1]]);
+  const cloneTrackId = Math.max(nextTrackIdOf(moov), 3);
+  setTrackId(findChild(clone, "tkhd"), cloneTrackId);
+  moov.children.push(clone);
+  report.clonedTrack = true;
+
+  const mvhd = findChild(moov, "mvhd");
+  if (mvhd) {
+    const copy = mvhd.payload.slice();
+    setU32(copy, copy.byteLength - 4, cloneTrackId + 1);
+    mvhd.payload = copy;
+  }
+  const current = movieDurationOf(mvhd);
+  if (!current.unknown) setMovieDuration(mvhd, Math.max(current.value, trackDuration));
+
+  report.applied = true;
+  report.frames = tailSizes.length;
+  report.bytes = AUDIO_TAIL_BYTES.byteLength;
+  report.seconds = AUDIO_TAIL_SECONDS;
+
+  const cloneStco = pathBox(clone, "mdia", "minf", "stbl", "stco") ??
+    pathBox(clone, "mdia", "minf", "stbl", "co64");
+  return { report, targets: [stco, cloneStco].filter(Boolean), perSample };
+}
+
+
+/* ------------------------------------------------------------------ */
 /* inspección                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -517,11 +872,17 @@ export function patchMp4(input, userOptions = {}) {
   const provided = { ...userOptions };
   const opts = { ...DEFAULTS, ...provided };
   const compat = opts.mode === "compat";
+  const surgical = opts.mode === "surgical";
   const ghostSamples = compat ? Math.max(0, Math.min(100000, opts.ghostSamples | 0)) : 0;
 
   // En compat, la firma por defecto es la del taller.
   if (compat && provided.tagName === undefined) opts.tagName = COMPAT_TAGS.tagName;
   if (compat && provided.tagComment === undefined) opts.tagComment = COMPAT_TAGS.tagComment;
+  // En quirúrgico, la firma imita a un mux de FFmpeg (se puede sobrescribir).
+  if (surgical && provided.tagName === undefined) opts.tagName = SURGICAL_TAGS.tagName;
+  if (surgical && provided.tagComment === undefined) opts.tagComment = SURGICAL_TAGS.tagComment;
+  // Un mux de FFmpeg escribe el idioma como `und` si no sabe nada mejor.
+  if (surgical && provided.language === undefined) opts.language = "und";
 
   const { bytes, boxes } = parseMp4(input);
 
@@ -559,7 +920,18 @@ export function patchMp4(input, userOptions = {}) {
     colorTagged: false,
     emptyEdit: false,
     timestampPatch: true,
+    paspAdded: false,
+    audioTrackCloned: false,
+    audioTail: null,
+    tagName: opts.tagOutput ? opts.tagName : null,
+    tagComment: opts.tagOutput ? opts.tagComment : null,
+    language: opts.language,
   };
+
+  if (surgical) {
+    const mvhd = findChild(moov, "mvhd");
+    report.movieTimescale = mvhd ? u32(mvhd.payload, mvhd.payload[0] === 1 ? 20 : 12) || 1000 : 1000;
+  }
 
   /* --- transformaciones de contenedor --- */
   zeroTimestamps(moov);
@@ -627,6 +999,21 @@ export function patchMp4(input, userOptions = {}) {
     moov.children.push(makeUdta(opts.tagName, opts.tagComment));
   }
 
+  /* --- modo quirúrgico: pasp + cola de audio real + pista clonada --- */
+  let audioTail = null;
+  if (surgical) {
+    report.paspAdded = addPasp(video);
+    if (audio) {
+      // El clon hereda lo que haya en la pista: se limpia antes.
+      if (audio.children) audio.children = audio.children.filter((box) => box.type !== "udta");
+      audioTail = applyAudioTail(moov, audio, report.movieTimescale);
+      report.audioTail = audioTail.report;
+      report.audioTrackCloned = audioTail.report.clonedTrack;
+    } else {
+      report.audioTail = { applied: false, reason: "el archivo no tiene pista de audio" };
+    }
+  }
+
   const ftyp = makeFtyp(codec);
   const ftypBytes = serializeBox(ftyp);
   const freeBytes = boxBytes("free", new Uint8Array(0));
@@ -652,6 +1039,12 @@ export function patchMp4(input, userOptions = {}) {
     stsc.payload = nextSc;
   }
 
+  /* --- offsets de la cola de audio (por muestra, sin desplazar todavía) --- */
+  const tailTargets = new Set(audioTail && audioTail.report.applied ? audioTail.targets : []);
+  if (tailTargets.size) {
+    for (const box of tailTargets) writeOffsets(box, audioTail.perSample);
+  }
+
   /* --- recomponer offsets y moov (iterando por si stco pasa a co64) --- */
   const offsetBoxes = [...findAll(moov, "stco"), ...findAll(moov, "co64")];
   const originalOffsets = new Map(offsetBoxes.map((box) => [box, readOffsets(box)]));
@@ -660,7 +1053,9 @@ export function patchMp4(input, userOptions = {}) {
   // Fiel al original: se añaden 8 bytes de relleno fantasma una sola vez,
   // aunque stsz declare `ghostSamples` muestras de 8 bytes cada una.
   const ghostBytes = ghostSamples > 0 ? GHOST_SAMPLE.slice() : new Uint8Array(0);
-  const mdatPayloadSize = payload.byteLength + ghostBytes.byteLength;
+  const tailBytes = audioTail && audioTail.report.applied ? AUDIO_TAIL_BYTES : new Uint8Array(0);
+  const appendBytes = ghostSamples > 0 ? ghostBytes : tailBytes;
+  const mdatPayloadSize = payload.byteLength + appendBytes.byteLength;
   let moovBytes = serializeBox(moov);
   let headerSize = mdatPayloadSize + 8 > 0xffffffff ? 16 : 8;
   let stable = false;
@@ -668,15 +1063,24 @@ export function patchMp4(input, userOptions = {}) {
   for (let iteration = 0; iteration < 12 && !stable; iteration += 1) {
     const base = ftypBytes.byteLength + freeBytes.byteLength + moovBytes.byteLength + headerSize;
     const delta = base - mdat.payloadStart;
-    const ghostStart = base + payload.byteLength;
+    const appendStart = base + payload.byteLength;
 
     for (const box of offsetBoxes) {
       const source = originalOffsets.get(box);
+      if (!source) continue;
       const shifted = source.map((value) => value + delta);
       // Fiel al original: N offsets de chunk distintos apuntando todos al
       // mismo inicio de la zona fantasma (stsc les asigna 1 sample a cada uno).
       if (videoOffsetBoxes.has(box) && ghostSamples > 0) {
-        for (let i = 0; i < ghostSamples; i += 1) shifted.push(ghostStart);
+        for (let i = 0; i < ghostSamples; i += 1) shifted.push(appendStart);
+      }
+      // Quirúrgico: un offset por frame de silencio, al final del mdat.
+      if (tailTargets.has(box)) {
+        let at = appendStart;
+        for (const size of AUDIO_TAIL_SIZES) {
+          shifted.push(at);
+          at += size;
+        }
       }
       writeOffsets(box, shifted);
     }
@@ -700,7 +1104,7 @@ export function patchMp4(input, userOptions = {}) {
     mdatHeader.set(asciiBytes("mdat"), 4);
   }
 
-  const parts = [ftypBytes, freeBytes, moovBytes, mdatHeader, payload, ghostBytes];
+  const parts = [ftypBytes, freeBytes, moovBytes, mdatHeader, payload, appendBytes];
   const output = concat(parts);
 
   const sttsFinal = pathBox(video, "mdia", "minf", "stbl", "stts");
@@ -710,6 +1114,22 @@ export function patchMp4(input, userOptions = {}) {
   report.chunkOffsets = offsetBoxes.reduce((sum, box) => sum + readOffsets(box).length, 0);
   report.ghostOffsets = ghostSamples;
   report.sampleTableMismatch = report.sttsSamples !== report.stszSamples;
+
+  // Coherencia de todas las pistas (no solo la de vídeo). Se recalculan aquí
+  // porque el modo quirúrgico añade una pista clonada al moov.
+  const finalTracks = moov.children.filter((box) => box.type === "trak");
+  report.trackCount = finalTracks.length;
+  report.trackTables = finalTracks.map((trak) => {
+    const stts = pathBox(trak, "mdia", "minf", "stbl", "stts");
+    const stsz = pathBox(trak, "mdia", "minf", "stbl", "stsz");
+    const hdlr = pathBox(trak, "mdia", "hdlr");
+    return {
+      handler: hdlr ? ascii(hdlr.payload, 8, 4) : "?",
+      samples: stsz ? readSampleSizes(stsz).sizes.length : 0,
+      timing: stts ? readStts(stts).reduce((sum, [count]) => sum + count, 0) : 0,
+    };
+  });
+  report.tablesConsistent = report.trackTables.every((track) => track.samples === track.timing);
 
   report.inputSize = bytes.byteLength;
   report.outputSize = output.byteLength;
@@ -723,8 +1143,8 @@ export function patchMp4(input, userOptions = {}) {
 /* verificación                                                        */
 /* ------------------------------------------------------------------ */
 
-export function verifyMp4(input) {
-  const { boxes } = parseMp4(input);
+export function verifyMp4(input, options = {}) {
+  const { bytes, boxes } = parseMp4(input);
   const issues = [];
   const moovIndex = boxes.findIndex((box) => box.type === "moov");
   const mdatIndex = boxes.findIndex((box) => box.type === "mdat");
@@ -746,6 +1166,37 @@ export function verifyMp4(input) {
     }
   }
 
-  const info = inspectMp4(input);
+  // Coherencia de tablas: stts y stsz deben declarar el mismo nº de muestras.
+  if (options.expectConsistentTables) {
+    for (const trak of (moov.children ?? []).filter((box) => box.type === "trak")) {
+      const stts = pathBox(trak, "mdia", "minf", "stbl", "stts");
+      const stsz = pathBox(trak, "mdia", "minf", "stbl", "stsz");
+      if (!stts || !stsz) continue;
+      const timing = readStts(stts).reduce((sum, [count]) => sum + count, 0);
+      const samples = readSampleSizes(stsz).sizes.length;
+      if (timing !== samples) {
+        issues.push(`Tablas descuadradas: stts declara ${timing} muestras y stsz ${samples}.`);
+      }
+    }
+  }
+
+  // Firma: el texto debe existir en algún udta del moov.
+  if (options.tagName) {
+    const needle = new TextEncoder().encode(options.tagName);
+    const found = findAll(moov, "udta").some((box) => indexOfBytes(box.payload, needle) !== -1);
+    if (!found) issues.push(`No se encontró la firma "${options.tagName}" en udta.`);
+  }
+
+  // Nº mínimo de pistas (el modo quirúrgico deja dos de audio).
+  if (options.minAudioTracts) {
+    const audioTracks = (moov.children ?? []).filter(
+      (box) => box.type === "trak" && handlerType(box) === "soun",
+    ).length;
+    if (audioTracks < options.minAudioTracts) {
+      issues.push(`Se esperaban al menos ${options.minAudioTracts} pistas de audio y hay ${audioTracks}.`);
+    }
+  }
+
+  const info = inspectMp4(bytes);
   return { ok: issues.length === 0, issues, chunks, info };
 }

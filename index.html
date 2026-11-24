@@ -57,7 +57,7 @@
 
           <ul class="facts">
             <li><strong>Sin recomprimir</strong> si ya es H.264/HEVC</li>
-            <li><strong>Mismo descuadre</strong> que el archivo de referencia</li>
+            <li><strong>Dos costuras</strong>: con corte o puntada invisible</li>
             <li><strong>Nada sale</strong> de tu equipo</li>
           </ul>
         </div>
@@ -142,6 +142,7 @@
             <span>Modo</span>
             <select id="mode">
               <option value="compat" selected>Corte de hilos — efecto original</option>
+              <option value="surgical">Puntada invisible — efecto sin tablas rotas</option>
               <option value="safe">Dobladillo limpio — contenedor válido</option>
             </select>
           </label>
@@ -153,7 +154,7 @@
 
           <label class="check">
             <input id="tag" type="checkbox" checked />
-            <span>Firmar la salida con el nombre del taller</span>
+            <span id="tagLabel" data-default="Firmar la salida con el nombre del taller">Firmar la salida con el nombre del taller</span>
           </label>
         </div>
 
@@ -170,6 +171,18 @@
         <p class="note faint" id="tagNote" hidden>
           La firma que quedará en el MP4 es <code>BlueChisa-v2.0.3</code>. Es lo que
           verás en MediaInfo como aplicación de escritura.
+        </p>
+        <p id="surgicalNote" class="note warn" hidden>
+          Consigue el mismo efecto <strong>sin romper las tablas</strong>: la pista de audio
+          recibe 18 fotogramas reales de silencio (0,384 s) con una segunda descripción de
+          muestra, se clona esa pista y se fija un <code>pasp</code> 1:1. <code>stts</code> y
+          <code>stsz</code> cuadran, así que el archivo es válido. Solo se aplica si el audio
+          es AAC estéreo a 48 kHz; si no, se salta y lo indica. Deja firma
+          <code>Lavf62.3.100</code> (como un mux de FFmpeg).
+        </p>
+        <p class="note faint" id="surgicalTagNote" hidden>
+          La firma que quedará en el MP4 es <code>Lavf62.3.100</code>, la misma que deja
+          un mux de FFmpeg. Si desmarcas la casilla, no se escribe ningún <code>udta</code>.
         </p>
 
         <button id="run" class="primary" type="button" disabled>
@@ -212,10 +225,15 @@
       <section class="card caveat">
         <h2>Antes de cortar</h2>
         <p>
-          El corte no «mejora» el vídeo: deja el contenedor MP4
-          <strong>inconsistente a propósito</strong> para que el transcoder de la
-          plataforma no pueda rebajarlo. Es la misma estructura del archivo de
-          referencia, comprobada contra él.
+          El corte no «mejora» el vídeo: altera la estructura del contenedor para que el
+          transcoder de la plataforma no pueda rebajarlo. Hay dos maneras:
+        </p>
+        <p>
+          <strong>Corte de hilos</strong> replica el descuadre de tablas del archivo de
+          referencia, comprobado contra él: deja el MP4 <strong>inconsistente a
+          propósito</strong>. <strong>Puntada invisible</strong> busca el mismo resultado
+          con un archivo válido (cola real de silencio, pista de audio clonada y
+          <code>pasp</code> 1:1), sin tocar <code>stts</code>/<code>stsz</code>.
         </p>
         <p class="note warn" style="margin-top: 14px">
           Si necesitas publicar con seguridad, usa <strong>Dobladillo limpio</strong>:

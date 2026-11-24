@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Test · mp4.js</title>
+    <style>
+      body { font-family: ui-monospace, Consolas, monospace; background: #060708; color: #e9e7e2; padding: 24px; }
+      h1 { font-size: 18px; color: #35e6e0; }
+      h2 { font-size: 14px; color: #35e6e0; margin-top: 28px; }
+      pre { background: #0c0e0f; border: 1px solid #23282b; padding: 14px; overflow: auto; font-size: 12px; }
+      video { width: 320px; border: 1px solid #23282b; display: block; margin: 8px 0 20px; }
+      .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+      .ok { color: #35e6e0; }
+      .bad { color: #ff6b6b; }
+      .pick { display: inline-block; padding: 10px 16px; border: 1px dashed #35e6e0; color: #35e6e0; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <h1>Test del parcheador MP4</h1>
+    <p>
+      Elige un MP4 real (H.264 o HEVC). Se sellará con los tres modos y se intentará
+      reproducir cada resultado en el navegador.
+    </p>
+    <label class="pick">
+      Elegir vídeo
+      <input id="pick" type="file" accept="video/*,.mp4,.m4v" hidden />
+    </label>
+    <div id="out"></div>
+
+    <script type="module">
+      import { inspectMp4, patchMp4, verifyMp4 } from "../src/mp4.js";
+
+      const out = document.getElementById("out");
+      const pick = document.getElementById("pick");
+
+      const log = (title, data) => {
+        const h = document.createElement("h2");
+        h.textContent = title;
+        const pre = document.createElement("pre");
+        const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+        pre.textContent = text;
+        out.append(h, pre);
+      };
+
+      /* Cada modo probado, con la verificación que le corresponde. */
+      const MODES = [
+        {
+          mode: "safe",
+          verify: {},
+          note: "tablas intactas; solo normaliza el contenedor",
+        },
+        {
+          mode: "compat",
+          verify: {},
+          note: "descuadre deliberado de tablas (puede atascar el transcoder)",
+        },
+        {
+          mode: "surgical",
+          verify: { expectConsistentTables: true, tagName: "Lavf62.3.100", minAudioTracts: 2 },
+          note: "cola real de silencio + pista clonada + pasp; tablas coherentes",
+        },
+      ];
+
+      async function run(original) {
+        out.innerHTML = "";
+        const size = (n) => `${(n / 1e6).toFixed(2)} MB`;
+
+        log(`Original · ${size(original.byteLength)}`, inspectMp4(original));
+
+        for (const test of MODES) {
+          const wrap = document.createElement("div");
+          out.append(wrap);
+
+          try {
+            const { bytes, report } = patchMp4(original, { mode: test.mode });
+            const check = verifyMp4(bytes, test.verify);
+
+            const blobUrl = URL.createObjectURL(new Blob([bytes], { type: "video/mp4" }));
+            const video = document.createElement("video");
+            video.controls = true;
+            video.preload = "metadata";
+            video.src = blobUrl;
+
+            const label = document.createElement("p");
+            label.textContent = `Reproducción: comprobando…`;
+            video.onloadedmetadata = () => {
+              label.textContent = `Reproducción: OK · ${video.videoWidth}×${video.videoHeight} · ${video.duration.toFixed(2)} s`;
+              label.className = "ok";
+            };
+            video.onerror = () => {
+              label.textContent = `Reproducción: ERROR al decodificar (${video.error?.code ?? "?"})`;
+              label.className = "bad";
+            };
+
+            const title = document.createElement("h2");
+            title.textContent = `${test.mode.toUpperCase()} · ${size(bytes.byteLength)} (${report.sizeDelta >= 0 ? "+" : ""}${report.sizeDelta} bytes)`;
+            wrap.append(title);
+
+            const note = document.createElement("p");
+            note.textContent = test.note;
+            wrap.append(note, label, video);
+
+            const detail = document.createElement("pre");
+            detail.textContent = JSON.stringify(
+              {
+                report,
+                verification: { ok: check.ok, issues: check.issues, chunks: check.chunks },
+              },
+              null,
+              2,
+            );
+            wrap.append(detail);
+          } catch (error) {
+            log(`${test.mode.toUpperCase()} · FALLÓ`, `${error.name}: ${error.message}`);
+          }
+        }
+      }
+
+      pick.addEventListener("change", async () => {
+        const file = pick.files?.[0];
+        if (!file) return;
+        try {
+          await run(new Uint8Array(await file.arrayBuffer()));
+        } catch (error) {
+          log("ERROR GLOBAL", `${error.name}: ${error.message}\n${error.stack ?? ""}`);
+        }
+      });
+
+      // Atajo: si existe test/sample.mp4 se prueba solo.
+      try {
+        const res = await fetch("./sample.mp4", { cache: "no-store" });
+        if (res.ok) await run(new Uint8Array(await res.arrayBuffer()));
+      } catch {
+        /* sin muestra: se espera al selector */
+      }
+    </script>
+  </body>
+</html>

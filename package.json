@@ -1,0 +1,10 @@
+{
+  "name": "blue-chisa",
+  "version": "2.0.3",
+  "private": true,
+  "type": "module",
+  "description": "Sellador de contenedor MP4 — Chisa / taller de hilos",
+  "scripts": {
+    "test": "node test/surgical.test.mjs"
+  }
+}

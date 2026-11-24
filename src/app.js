@@ -6,7 +6,6 @@ const CONFIG = {
   runLabel: "Cortar el hilo",
   busyLabel: "Cortando…",
   suffix: "chisa",
-  signatureLabel: "BlueChisa",
   tagName: "BlueChisa-v2.0.3",
   tagComment: "BlueChisa",
   handlerName: "BlueChisa-coded",
@@ -36,9 +35,12 @@ const els = {
   ghost: $("ghost"),
   ghostField: $("ghostField"),
   tag: $("tag"),
+  tagLabel: $("tagLabel"),
   modeNote: $("modeNote"),
   compatNote: $("compatNote"),
+  surgicalNote: $("surgicalNote"),
   tagNote: $("tagNote"),
+  surgicalTagNote: $("surgicalTagNote"),
   run: $("run"),
   error: $("error"),
   progress: $("progress"),
@@ -178,11 +180,24 @@ function clearFile() {
 }
 
 function updateMode() {
-  const compat = els.mode.value === "compat";
-  els.ghostField.hidden = !compat;
-  els.modeNote.hidden = compat;
-  els.compatNote.hidden = !compat;
-  els.tagNote.hidden = !compat;
+  const mode = els.mode.value;
+  const compat = mode === "compat";
+  const surgical = mode === "surgical";
+  // Las notas se muestran según el modo; `setHidden` tolera que falte alguna.
+  const setHidden = (el, hidden) => {
+    if (el) el.hidden = hidden;
+  };
+  setHidden(els.ghostField, !compat);
+  setHidden(els.modeNote, mode !== "safe");
+  setHidden(els.compatNote, !compat);
+  setHidden(els.surgicalNote, !surgical);
+  setHidden(els.tagNote, !compat);
+  setHidden(els.surgicalTagNote, !surgical);
+  // La casilla de firma significa cosas distintas según el modo.
+  if (els.tagLabel) {
+    const base = els.tagLabel.dataset.default ?? els.tagLabel.textContent;
+    els.tagLabel.textContent = surgical ? "Firmar la salida como un mux de FFmpeg" : base;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -193,12 +208,20 @@ async function processFile() {
   if (!state.file || state.busy) return;
 
   const file = state.file;
+  const mode = els.mode.value;
   const options = {
-    mode: els.mode.value,
+    mode,
     ghostSamples: Number(els.ghost.value) || 0,
     tagOutput: els.tag.checked,
   };
-  if (CONFIG.tagName) {
+  // Firma: la página puede sobrescribirla. En quirúrgico, si no hay
+  // `surgicalTagName`, no se pasa nada y el motor usa Lavf62.3.100.
+  if (mode === "surgical") {
+    if (CONFIG.surgicalTagName) {
+      options.tagName = CONFIG.surgicalTagName;
+      options.tagComment = CONFIG.surgicalTagComment ?? CONFIG.surgicalTagName;
+    }
+  } else if (CONFIG.tagName) {
     options.tagName = CONFIG.tagName;
     options.tagComment = CONFIG.tagComment ?? CONFIG.tagName;
     options.handlerName = CONFIG.handlerName ?? `${options.tagComment}-coded`;
@@ -239,7 +262,11 @@ async function processFile() {
     }
 
     setStage("Revisando la costura", 0.92);
-    const verification = verifyMp4(patched.bytes);
+    const verification = verifyMp4(patched.bytes, {
+      expectConsistentTables: mode === "surgical",
+      tagName: patched.report.tagName ?? undefined,
+      minAudioTracts: patched.report.audioTrackCloned ? 2 : undefined,
+    });
 
     setStage("Revisando la costura", 1);
     showResult(patched, verification, converted);
@@ -282,6 +309,18 @@ function showResult({ bytes, report }, verification, converted) {
   if (report.ghostSamples) {
     rows.push(["Muestras stts / stsz", `${report.sttsSamples} / ${report.stszSamples}`]);
   }
+  if (report.mode === "surgical") {
+    const tail = report.audioTail ?? {};
+    rows.push(["Tablas", report.tablesConsistent ? "coherentes (stts = stsz)" : "descuadradas"]);
+    rows.push([
+      "Cola de audio",
+      tail.applied
+        ? `${tail.frames} frames · ${(tail.seconds ?? 0).toFixed(3)} s`
+        : `no aplicada${tail.reason ? ` (${tail.reason})` : ""}`,
+    ]);
+    rows.push(["Pistas", `${report.trackCount ?? "—"}${report.audioTrackCloned ? " · audio clonado" : ""}`]);
+    rows.push(["pasp", report.paspAdded ? "1:1 añadido" : "ya presente / no aplicable"]);
+  }
 
   els.report.innerHTML = "";
   for (const [label, value] of rows) {
@@ -301,6 +340,21 @@ function showResult({ bytes, report }, verification, converted) {
   ];
   if (report.colorTagged) changes.push("Etiqueta de color BT.709 (primaries/transfer/matrix) añadida.");
   if (report.emptyEdit) changes.push("Edit list vacía de 16 ticks antepuesta (modo compat).");
+  if (report.paspAdded) changes.push("Caja pasp 1:1 (píxeles cuadrados) insertada antes de btrt en la pista de vídeo.");
+  if (report.audioTail?.applied) {
+    changes.push(
+      `Cola real de ${report.audioTail.frames} frames AAC de silencio ` +
+        `(${(report.audioTail.seconds ?? 0).toFixed(3)} s, ${report.audioTail.bytes} B): ` +
+        "añadida al final del mdat con offsets por muestra.",
+    );
+    changes.push("Segunda descripción de muestra en el stsd de audio (esds con firma Lavc62.11.100).");
+  } else if (report.mode === "surgical" && report.audioTail) {
+    changes.push(`Cola de audio omitida: ${report.audioTail.reason ?? "audio no compatible"}.`);
+  }
+  if (report.audioTrackCloned) changes.push("Pista de audio clonada con una única descripción de muestra.");
+  if (report.mode === "surgical" && report.tablesConsistent) {
+    changes.push("Tablas de todas las pistas cuadradas: stts y stsz declaran el mismo nº de muestras.");
+  }
   if (report.ghostSamples) changes.push(`${report.ghostSamples} muestras fantasma de 8 bytes añadidas (modo compat).`);
   if (report.sampleTableMismatch) {
     changes.push(
@@ -308,8 +362,10 @@ function showResult({ bytes, report }, verification, converted) {
         "Eso es lo que puede atascar el transcoder de la plataforma y dejar el original.",
     );
   }
-  if (els.tag.checked) {
-    changes.push(`Firma ${CONFIG.signatureLabel} escrita en udta/meta/ilst (©too, ©cmt, ©cprt).`);
+  if (report.tagName) {
+    changes.push(`Firma ${report.tagName} escrita en udta/meta/ilst (©too, ©cmt, ©cprt).`);
+  } else {
+    changes.push("Sin firma: no se escribe udta/meta.");
   }
   changes.push("Cajas de procedencia (uuid/C2PA/xml/sdtp) eliminadas del interior de moov.");
 
